@@ -14,16 +14,15 @@ class Tokenizer():
     def __init__(self, max_length: int):
         self._vocab = ['-', 'p', '1', 'b', 'v', 's', 'l', 'o', 'j', 'h', 'y', '4', '.', 'g', ' ', '|', '/', 'a', ',', '0', '2', '7', '6', '5', 'c', '3', 'm', 'f', 't', 'd', 'e', 'r', 'u', '8', 'n', '9', 'i']
         self._pad_token_idx = 0
-        self._start_token = 1
-        self._vocab_to_idx = {ch: i + 2 for i, ch in enumerate(self._vocab)}
+        self._vocab_to_idx = {ch: i + 1 for i, ch in enumerate(self._vocab)}
         self.max_length = max_length
 
     @property
     def vocab_size(self) -> int:
-        return len(self._vocab) + 2
+        return len(self._vocab) + 1
 
     def __call__(self, text: str) -> List[int]:
-        token_ids = [self._start_token]
+        token_ids = []
 
         for ch in text:
             token_ids.append(
@@ -53,14 +52,16 @@ if __name__ == '__main__':
         num_features=64,
         num_heads=2,
         vocab_size=tokenizer.vocab_size,
-        sliding_window_radius=5,
-        segment_radius=1,
-        hard_masking=True,
-        global_token_ratio=4,
+
+        long_to_global_ratio=16,
+        add_global_cls_token=False,
+        rel_pos_max_distance=5,
+        local_attention_radius=5*5,
     )
     device = "cuda"
 
-    
+    """
+    # needs CLS Token
     model = VanillaTransformer(
         config.num_features,
         config.num_heads,
@@ -70,18 +71,19 @@ if __name__ == '__main__':
     )
     """
 
+    #"""
     model = ETC(
         config.num_features,
         config.num_heads,
         tokenizer.vocab_size,
-        config.sliding_window_radius,
-        config.segment_radius,
-        hard_masking=config.hard_masking,
-        global_token_ratio=config.global_token_ratio,
-        num_of_global_token_types=1,
-        num_layers=1,
+        num_layers=2,
+
+        long_to_global_ratio=config.long_to_global_ratio,
+        add_global_cls_token=config.add_global_cls_token,
+        rel_pos_max_distance=config.rel_pos_max_distance,
+        local_attention_radius=config.local_attention_radius,
     )
-    """
+    #"""
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
