@@ -200,7 +200,9 @@ class ETCLayer(nn.TransformerEncoderLayer):
                 "local_attention_radius": "segmented",
             }
         }
-        self.self_attn = RelativeMultiHeadAttention(
+        delattr(self, "self_attn")
+
+        self.test = RelativeMultiHeadAttention(
             d_model,
             nhead,
             rel_pos_max_distance=5,
@@ -274,7 +276,7 @@ class ETCLayer(nn.TransformerEncoderLayer):
 
     # self-attention block
     def _sa_block(self, x: Tensor, _: Optional[Tensor], key_padding_mask: Optional[Tensor]) -> Tensor:
-        z = self.self_attn(x, x, x, key_padding_mask=key_padding_mask)
+        z = self.test(x, x, x, key_padding_mask=key_padding_mask)
 
         return self.dropout1(z)
 
@@ -315,38 +317,37 @@ class ETCLayer(nn.TransformerEncoderLayer):
 class ETC(nn.Module):
     def __init__(
         self,
+        # Transformer specific params
         d_model: int,
         num_heads: int,
         vocab_size: int,
-        sliding_window_radius: int,
-        segment_radius: int,
-        hard_masking: bool = False,
-        global_token_ratio: int = 16,
-        num_of_global_token_types: int = 1,
+        max_seq_len: int,
         num_layers: int = 1,
-        num_classes = 1,
+        num_classes: int = 1,
+
+        # ETC specific params
+        long_to_global_ratio: int = 16
+
     ):
         super().__init__()
 
         self.embeds = nn.Embedding(vocab_size, d_model, padding_idx=0)
         self.auxiliary_global_layer = FixedRatioGlobalBlock(
-            num_of_global_token_types,
             d_model,
-            global_token_ratio=global_token_ratio,
+            long_to_global_ratio=long_to_global_ratio,
+            add_cls_token=True,
         )
-        encoder_layer = ETCLayer(
+
+        encoder_layer = nn.TransformerEncoderLayer(
             d_model,
             num_heads,
             dim_feedforward=d_model*2,
             dropout=0,
             batch_first=True,
-
-            # ETC specific keyword args
-            sliding_window_radius=sliding_window_radius,
-            segment_radius=segment_radius,
-            hard_masking=hard_masking,
-            global_token_ratio=global_token_ratio,
         )
+
+        # override self_attn with GLMultiHeadAttention
+        encoder_layer.self_attn = ...
 
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
@@ -411,22 +412,13 @@ class VanillaTransformer(nn.Module):
         super().__init__()
 
         self.embeds = nn.Embedding(vocab_size, d_model, padding_idx=0)
-        """
+
         encoder_layer = nn.TransformerEncoderLayer(
             d_model,
             num_heads,
             dim_feedforward=d_model*2,
             dropout=0,
             batch_first=True,
-        )
-        """
-        encoder_layer = ETCLayer(
-            d_model,
-            num_heads,
-            dim_feedforward=d_model*2,
-            dropout=0,
-            batch_first=True,
-            sliding_window_radius=5,
         )
 
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
@@ -454,7 +446,7 @@ class VanillaTransformer(nn.Module):
 
         pos_ids = torch.arange(x.shape[1], device=x.device)
 
-        z = self.encoder(x, src_key_padding_mask=mask)
+        z = self.encoder(x + self.pos_embeds(pos_ids), src_key_padding_mask=mask)
         # z: B x (Sl + Sg) x d
 
         logits = self.cls_head(z[:, 0, :])
