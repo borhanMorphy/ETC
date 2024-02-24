@@ -5,164 +5,9 @@ import torch.nn as nn
 from torch import LongTensor, Tensor, BoolTensor
 
 from .blocks import (
-    LocalMultiHeadAttention,
-    GlobalMultiHeadAttention,
+    GLMultiHeadAttention,
     FixedRatioGlobalBlock,
 )
-from .mha import RelativeMultiHeadAttention
-from .blocks.attention import SlidingWindowAttention
-
-
-class GlobalLocalMultiHeadAttention(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        num_heads: int,
-        sliding_window_radius: int,
-        segment_radius: int,
-        hard_masking: bool = False,
-        global_token_ratio: int = 16,
-        # TODO dropout
-    ):
-        super().__init__()
-
-        self.global_token_ratio = global_token_ratio
-        self.local_layer = LocalMultiHeadAttention(
-            d_model, num_heads, sliding_window_radius, segment_radius
-        )
-        self.global_layer = GlobalMultiHeadAttention(
-            d_model, num_heads, sliding_window_radius, segment_radius,
-            hard_masking=hard_masking,
-        )
-
-    def forward(self, x: Tensor, padding_mask = None) -> Tensor:
-        """
-
-        Args:
-            x (Tensor): B x (Sl + Sg) x d
-            padding_mask (BoolTensor): B x (Sl + Sg)
-
-        Returns:
-            Tensor: B x (Sl + Sg) x d
-        """
-        # x_long: Tensor, x_global: Tensor, segment_ids: LongTensor
-
-        # S = Sl + Sg
-        # Sg = Sl / ratio
-
-        # Sl := (S * ratio) / (1 + ratio)
-        # Sg := S - Sl
-
-        S = x.shape[1]
-
-        Sl = (S * self.global_token_ratio) // (1 + self.global_token_ratio)
-        Sg = S - Sl
-
-        x_long = x[:, :Sl, :]
-        # x_long (Tensor): B x Sl x d
-
-        x_global = x[:, Sl:, :]
-        # x_long (Tensor): B x Sg x d
-
-        long_padding_mask = padding_mask[:, :Sl]
-        global_padding_mask = padding_mask[:, Sl:]
-
-        segment_ids = torch.arange(Sl) // self.global_token_ratio
-        # segment_ids: Sl
-
-        # TODO find a better way
-        l2l_padding_mask = long_padding_mask
-
-        l2g_padding_mask = (
-            long_padding_mask.unsqueeze(2).float()\
-                 @ global_padding_mask.unsqueeze(2).permute(0, 2, 1).float()
-        ).bool()
-
-        g2g_padding_mask = (
-            global_padding_mask.unsqueeze(2).float()\
-                 @ global_padding_mask.unsqueeze(2).permute(0, 2, 1).float()
-        ).bool()
-
-        g2l_padding_mask = (
-            global_padding_mask.unsqueeze(2).float()\
-                 @ long_padding_mask.unsqueeze(2).permute(0, 2, 1).float()
-        ).bool()
-        """
-        import matplotlib.pyplot as plt
-        plt.imshow(l2l_padding_mask[0].cpu())
-        plt.show()
-        plt.imshow(l2g_padding_mask[0].cpu())
-        plt.show()
-        plt.imshow(g2g_padding_mask[0].cpu())
-        plt.show()
-        plt.imshow(g2l_padding_mask[0].cpu())
-        plt.show()
-        exit(0)
-        """
-
-        z_long = self.local_layer(x_long, x_global, segment_ids,
-            l2l_padding_mask=l2l_padding_mask,
-            l2g_padding_mask=l2g_padding_mask,
-        )
-        z_global = self.global_layer(x_long, x_global, segment_ids,
-            g2g_padding_mask=g2g_padding_mask,
-            g2l_padding_mask=g2l_padding_mask,
-        )
-
-        return torch.cat([z_long, z_global], dim=1)
-
-
-# Deprecated
-class TransformerEncoderLayer(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        num_heads: int,
-        sliding_window_radius: int,
-        segment_radius: int,
-        hard_masking: bool = False,
-        global_token_ratio: int = 16,
-        dropout: float = 0.0,
-    ):
-        super().__init__()
-        # TODO add dropout
-
-        self.attn_block = GlobalLocalMultiHeadAttention(
-            d_model,
-            num_heads,
-            sliding_window_radius,
-            segment_radius,
-            hard_masking=hard_masking,
-            global_token_ratio=global_token_ratio,
-        )
-        self.layer_norm_first = nn.LayerNorm(d_model)
-
-        self.ffn = nn.Sequential(
-            nn.Linear(d_model, d_model*2, bias=False),
-            nn.ReLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(d_model*2, d_model, bias=False),
-        )
-        self.layer_norm_last = nn.LayerNorm(d_model)
-    
-    def forward(self, x: Tensor, long_padding_mask: BoolTensor = None, global_padding_mask: BoolTensor = None) -> Tensor:
-        """
-
-        Args:
-            x (Tensor): B x S x d
-            long_padding_mask (BoolTensor): B x Sl
-            global_padding_mask (BoolTensor): B x Sg
-
-        Returns:
-            Tensor: B x S x d
-        """
-        z = self.attn_block(x, long_padding_mask=long_padding_mask, global_padding_mask=global_padding_mask)
-
-        x_out = self.layer_norm_first(x + z)
-
-        x_out = self.layer_norm_last(x_out + self.ffn(x_out))
-
-        return x_out
 
 
 class ETCLayer(nn.TransformerEncoderLayer):
@@ -321,12 +166,15 @@ class ETC(nn.Module):
         d_model: int,
         num_heads: int,
         vocab_size: int,
-        max_seq_len: int,
         num_layers: int = 1,
         num_classes: int = 1,
 
         # ETC specific params
-        long_to_global_ratio: int = 16
+        long_to_global_ratio: int = 16,
+        add_global_cls_token: bool = False,
+        rel_pos_max_distance: int = 4,
+        local_attention_radius: int = 4,
+        # TODO
 
     ):
         super().__init__()
@@ -335,7 +183,7 @@ class ETC(nn.Module):
         self.auxiliary_global_layer = FixedRatioGlobalBlock(
             d_model,
             long_to_global_ratio=long_to_global_ratio,
-            add_cls_token=True,
+            add_cls_token=add_global_cls_token,
         )
 
         encoder_layer = nn.TransformerEncoderLayer(
@@ -346,8 +194,14 @@ class ETC(nn.Module):
             batch_first=True,
         )
 
-        # override self_attn with GLMultiHeadAttention
-        encoder_layer.self_attn = ...
+        # override `MultiHeadAttention` with `GLMultiHeadAttention`
+        encoder_layer.self_attn = GLMultiHeadAttention(
+            d_model,
+            num_heads,
+            rel_pos_max_distance,
+            local_attention_radius,
+            long_to_global_ratio,
+        )
 
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
@@ -367,6 +221,8 @@ class ETC(nn.Module):
         Returns:
             Tensor: B x Nc
         """
+        batch_size, Sl = x_long_token_ids.shape[:2]
+        Sg = Sl // self.auxiliary_global_layer.long_to_global_ratio
 
         long_padding_mask = x_long_token_ids == self.embeds.padding_idx
         # long_padding_mask: B x Sl
@@ -391,9 +247,16 @@ class ETC(nn.Module):
         z = self.encoder(x, src_key_padding_mask=padding_mask)
         # z: B x (Sl + Sg) x d
 
-        Sl = x_long.shape[1]
+        z_cls = (
+            z[:, Sl:, :]
+            .masked_fill(
+                global_padding_mask.view(batch_size, Sg, 1),
+                0,
+            )
+            .sum(dim=1)
+        ) / (~global_padding_mask).sum(dim=1, keepdims=True)
 
-        logits = self.cls_head(z[:, Sl, :])
+        logits = self.cls_head(z_cls)
         # logits: B x Nc
 
         return logits

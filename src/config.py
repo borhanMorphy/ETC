@@ -7,7 +7,7 @@ class ModelConfig:
     num_heads: int
     vocab_size: int
 
-    sliding_window_radius: int
-    segment_radius: int
-    hard_masking: bool = False
-    global_token_ratio: int = 16
+    long_to_global_ratio: int
+    add_global_cls_token: bool
+    rel_pos_max_distance: int
+    local_attention_radius: int

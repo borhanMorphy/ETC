@@ -15,9 +15,11 @@ class FixedRatioGlobalBlock(nn.Module):
         super().__init__()
 
         self.long_to_global_ratio = long_to_global_ratio
+        extra_num_tokens = 2 if add_cls_token else 1
         self.embeds = nn.Embedding(
-            1 + 1 if add_cls_token else 0,
+            1 + extra_num_tokens,
             hidden_size,
+            padding_idx=0,
         )
         self.add_cls_token = add_cls_token
 
@@ -42,13 +44,13 @@ class FixedRatioGlobalBlock(nn.Module):
 
         num_global_tokens = seq_len // self.long_to_global_ratio
 
-        global_token_ids = torch.zeros((batch_size, num_global_tokens), dtype=token_ids.dtype, device=token_ids.device)
-        global_token_ids[:, 0] = 1
+        global_token_ids = torch.ones((batch_size, num_global_tokens), dtype=token_ids.dtype, device=token_ids.device)
 
         if padding_mask is not None:
             B, Sl = padding_mask.shape
             global_padding_mask = padding_mask.reshape(
                 B, Sl // self.long_to_global_ratio, self.long_to_global_ratio,
             ).all(dim=2)
+            global_token_ids[global_padding_mask] = self.embeds.padding_idx
 
         return self.embeds(global_token_ids), global_padding_mask

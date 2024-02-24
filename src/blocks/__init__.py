@@ -1,15 +1,19 @@
 from .attention import (
-    SlidingWindowAttention,
-    GlobalMultiHeadAttention,
-    LocalMultiHeadAttention,
+    GLMultiHeadAttention,
+    RelativeMultiHeadAttention,
 )
-from .relative_position import RelativePE
+from .ffn import ProjectionLayer
 from .auxiliary import FixedRatioGlobalBlock
+from .relative_position import (
+    SlidedRelPosIds,
+    SegmentedRelPosIds,
+)
 
 __all__ = [
-    "SlidingWindowAttention",
-    "GlobalMultiHeadAttention",
-    "LocalMultiHeadAttention",
-    "RelativePE",
+    "GLMultiHeadAttention",
+    "RelativeMultiHeadAttention",
+    "SlidedRelPosIds",
+    "SegmentedRelPosIds",
+    "ProjectionLayer",
     "FixedRatioGlobalBlock",
 ]
