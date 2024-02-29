@@ -34,104 +34,60 @@ class RelativeMultiHeadAttention(nn.Module):
         self.vdim = vdim if vdim is not None else embed_dim
         self._qkv_same_embed_dim = self.kdim == embed_dim and self.vdim == embed_dim
 
-        self.head_dim = embed_dim // num_heads
-        self.num_heads = num_heads
         self.attention_type = attention_type
-
-        # r := local attention radius
-        self.local_attention_radius = local_attention_radius
-        # k := relative position maximum distance
-        self.rel_pos_max_distance = rel_pos_max_distance
-        self.num_pos_ids = 2 * rel_pos_max_distance + 1
 
         self.q_proj = ProjectionLayer(embed_dim, embed_dim, num_heads, identity=skip_query_projection)
         self.k_proj = ProjectionLayer(self.kdim, embed_dim, num_heads)
         self.v_proj = ProjectionLayer(self.vdim, embed_dim, num_heads)
         self.output = nn.Linear(embed_dim, embed_dim, bias=False)
 
-        self.rel_embeds = nn.Embedding(self.num_pos_ids, embed_dim)
         self.dropout = nn.Dropout(p=dropout)
         if attention_type == "segmented":
-            self.generate_relative_pos_ids = SegmentedRelPosIds(
+            self.rpe = SegmentedRelPosIds(
                 num_heads,
                 rel_pos_max_distance,
+                embed_dim,
+                local_attention_radius=local_attention_radius,
             )
         elif attention_type == "slided":
-            self.generate_relative_pos_ids = SlidedRelPosIds(
+            self.rpe = SlidedRelPosIds(
                 num_heads,
                 rel_pos_max_distance,
+                embed_dim,
+                local_attention_radius=local_attention_radius,
             )
         else:
             assert False
 
         self.register_buffer(
-            "rel_pos_ids",
-            torch.arange(self.num_pos_ids).unsqueeze(0),
-        )
-
-        self.register_buffer(
             "normalizer",
-            torch.tensor(self.head_dim**0.5),
+            torch.tensor(self.rpe.head_dim**0.5),
         )
-
-    @staticmethod
-    def generate_local_attn_mask(
-        seq_len_q: int,
-        seq_len_k: int,
-        local_attention_radius: int,
-        device=None,
-    ) -> BoolTensor:
-        mask = torch.ones(seq_len_q, seq_len_k, dtype=torch.bool, device=device)
-        # TODO avoid loop
-        for i in range(seq_len_q):
-            start = max(0, i - local_attention_radius)
-            end = min(seq_len_k, i + local_attention_radius + 1)
-            mask[i, start:end] = False
-        return mask
 
     def compute_energy(
         self,
         Q: Tensor,
         K: Tensor,
+        rel_embeds: Tensor,
         rel_pos_ids: LongTensor,
-        key_padding_mask = None,
+        mask: BoolTensor = None,
     ) -> Tensor:
         """_summary_
 
         Args:
             Q (Tensor): (B * h) x Sq x (dq / h)
             K (Tensor): (B * h) x Sk x (dq / h)
-            rel_pos_ids: (B * h) x Sq x Sk
-            key_padding_mask (BoolTensor): B x Sk
+            rel_embeds (Tensor): (B * h) x R x (dq / h)
+            rel_pos_ids (LongTensor): (B * h) x Sq x Sk
+            mask (BoolTensor): B x 1 x Sq x Sk
 
         Returns:
             Tensor: (B * h) x Sq x Sk
         """
-        # TODO rel_embeds needs to be input and should be computed by `SegmentedRelPosIds` or `SlidedRelPosIds`
-        # rel_embeds: (B * h) x R x (dq / h)
-        # TODO `generate_local_attn_mask` output, needs to be input and should be computed by `SegmentedRelPosIds` or `SlidedRelPosIds`
-        # mask: 1 x 1 x Sq x Sk
 
-        batch_size = Q.shape[0] // self.num_heads
+        batch_size = Q.shape[0] // self.rpe.num_heads
         seq_len_q = Q.shape[1]
         seq_len_k = K.shape[1]
-
-        rel_embeds = (
-            self.rel_embeds(self.rel_pos_ids)
-            .repeat(batch_size, 1, 1)
-            .view(
-                batch_size,
-                self.num_pos_ids,
-                self.head_dim,
-                self.num_heads,
-            )
-            .permute(0, 3, 1, 2)  # -> B x h x R x (dq / h)
-            .flatten(
-                start_dim=0,
-                end_dim=1,
-            ) # -> (B * h) x R x (dq / h)
-        )
-        # rel_embeds: (B * h) x R x (dq / h)
 
         # getting all possible Q relative values
         Q_rel = Q @ rel_embeds.permute(0, 2, 1)
@@ -150,28 +106,11 @@ class RelativeMultiHeadAttention(nn.Module):
 
         energy = (energy + rel_shift) / self.normalizer
 
-        mask = torch.zeros((batch_size, 1, seq_len_q, seq_len_k), dtype=torch.bool, device=Q.device)
-
-        if key_padding_mask is not None:
-            mask = mask | key_padding_mask.view(batch_size, 1, 1, seq_len_k)
-
-        if self.local_attention_radius is not None:
-            mask = mask | self.generate_local_attn_mask(
-                seq_len_q,
-                seq_len_k,
-                self.local_attention_radius,
-                device=Q.device,
-            ).view(1, 1, seq_len_q, seq_len_k)
-            # mask: B x 1 x Sq x Sk
-
-            # avoid masking all query values which will break softmax
-            mask = mask & (~mask.all(dim=3, keepdims=True))
-
         energy = (
             energy
             .view(
                 batch_size,
-                self.num_heads,
+                self.rpe.num_heads,
                 seq_len_q,
                 seq_len_k,
             )
@@ -218,15 +157,25 @@ class RelativeMultiHeadAttention(nn.Module):
         K = self.k_proj(K) # B x Sk x d -> (B * h) x Sk x (dq / h)
         V = self.v_proj(V) # B x Sk x d -> (B * h) x Sk x (dq / h)
 
-        rel_pos_ids = self.generate_relative_pos_ids(
+        rel_pos_ids, rel_embeds, mask = self.rpe(
+            batch_size,
             seq_len_q,
             seq_len_k,
-            batch_size,
+            segment_ids=segment_ids,
+            key_padding_mask=key_padding_mask,
             device=Q.device,
         )
         # rel_pos_ids: (B * h) x Sq x Sk
+        # rel_embeds: (B * h) x R x (dq / h)
+        # mask: B x 1 x Sq x Sk
 
-        energy = self.compute_energy(Q, K, rel_pos_ids, key_padding_mask=key_padding_mask)
+        energy = self.compute_energy(
+            Q,
+            K,
+            rel_embeds,
+            rel_pos_ids,
+            mask=mask
+        )
         # energy: (B * h) x Sq x Sk
 
         # compute softmax over Sk dimension
@@ -239,9 +188,9 @@ class RelativeMultiHeadAttention(nn.Module):
             torch.matmul(attn, V) # (B * h) x Sq x (dq / h)
             .view(
                 batch_size,
-                self.num_heads,
+                self.rpe.num_heads,
                 seq_len_q,
-                self.vdim // self.num_heads,
+                self.vdim // self.rpe.num_heads,
             )
             .permute(0, 2, 3, 1) # -> B x Sq x (dq / h) x h
             .flatten(
@@ -285,8 +234,8 @@ class GLMultiHeadAttention(nn.Module):
             embed_dim,
             num_heads,
             rel_pos_max_distance=1,
-            local_attention_radius=None,
-            attention_type="slided",
+            local_attention_radius=2,
+            attention_type="segmented",
             dropout=dropout,
         )
 
