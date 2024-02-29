@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Literal
 
 import torch
 import torch.nn as nn
@@ -20,6 +20,7 @@ class RelativeMultiHeadAttention(nn.Module):
         num_heads: int,
         rel_pos_max_distance: int,
         local_attention_radius: Optional[int] = None,
+        attention_type: Literal["slided", "segmented"] = "slided",
         dropout: float = 0.0,
         kdim: Optional[int] = None,
         vdim: Optional[int] = None,
@@ -35,6 +36,7 @@ class RelativeMultiHeadAttention(nn.Module):
 
         self.head_dim = embed_dim // num_heads
         self.num_heads = num_heads
+        self.attention_type = attention_type
 
         # r := local attention radius
         self.local_attention_radius = local_attention_radius
@@ -49,16 +51,18 @@ class RelativeMultiHeadAttention(nn.Module):
 
         self.rel_embeds = nn.Embedding(self.num_pos_ids, embed_dim)
         self.dropout = nn.Dropout(p=dropout)
-        if local_attention_radius == "segmented":
+        if attention_type == "segmented":
             self.generate_relative_pos_ids = SegmentedRelPosIds(
                 num_heads,
                 rel_pos_max_distance,
             )
-        else:
+        elif attention_type == "slided":
             self.generate_relative_pos_ids = SlidedRelPosIds(
                 num_heads,
                 rel_pos_max_distance,
             )
+        else:
+            assert False
 
         self.register_buffer(
             "rel_pos_ids",
@@ -103,6 +107,10 @@ class RelativeMultiHeadAttention(nn.Module):
         Returns:
             Tensor: (B * h) x Sq x Sk
         """
+        # TODO rel_embeds needs to be input and should be computed by `SegmentedRelPosIds` or `SlidedRelPosIds`
+        # rel_embeds: (B * h) x R x (dq / h)
+        # TODO `generate_local_attn_mask` output, needs to be input and should be computed by `SegmentedRelPosIds` or `SlidedRelPosIds`
+        # mask: 1 x 1 x Sq x Sk
 
         batch_size = Q.shape[0] // self.num_heads
         seq_len_q = Q.shape[1]
@@ -185,6 +193,7 @@ class RelativeMultiHeadAttention(nn.Module):
         Q: Tensor,
         K: Tensor,
         V: Tensor,
+        segment_ids: LongTensor,
         key_padding_mask: Optional[BoolTensor] = None,
     ) -> Tensor:
         """
@@ -193,6 +202,7 @@ class RelativeMultiHeadAttention(nn.Module):
             Q (Tensor): B x Sq x dq
             K (Tensor): B x Sk x dk
             V (Tensor): B x Sk x dv
+            segment_ids (LongTensor): B x max(Sq, Sk)
             key_padding_mask: (BoolTensor): B x Sk
 
         Returns:
@@ -268,13 +278,15 @@ class GLMultiHeadAttention(nn.Module):
             num_heads,
             rel_pos_max_distance=rel_pos_max_distance,
             local_attention_radius=local_attention_radius,
+            attention_type="slided",
             dropout=dropout,
         )
         self.g2l_attn = RelativeMultiHeadAttention(
             embed_dim,
             num_heads,
             rel_pos_max_distance=1,
-            #local_attention_radius="segmented",
+            local_attention_radius=None,
+            attention_type="slided",
             dropout=dropout,
         )
 
@@ -284,7 +296,8 @@ class GLMultiHeadAttention(nn.Module):
         key: Tensor,
         value: Tensor,
         key_padding_mask: Optional[BoolTensor] = None,
-        **kwargs
+        attn_mask: Optional[LongTensor] = None,
+        **kwargs,
     ) -> Tuple[Tensor, Optional[Tensor]]:
         """_summary_
 
@@ -293,6 +306,9 @@ class GLMultiHeadAttention(nn.Module):
             key (Tensor): B x (Sl + Sg) x d
             value (Tensor): B x (Sl + Sg) x d
             key_padding_mask (Optional[BoolTensor], optional): B x (Sl + Sg). Defaults to None.
+            attn_mask (Optional[LongTensor], optional): B x Sl. Defaults to None
+
+            # attn_mask: 0 0 0 1 1 2 2 2 2 3 3
 
         Returns:
             Tuple[Tensor, Optional[Tensor]]:
@@ -308,10 +324,24 @@ class GLMultiHeadAttention(nn.Module):
         l_value, g_value = value[:, :Sl, :], value[:, Sl:, :]
         l_key_padding_mask, g_key_padding_mask = key_padding_mask[:, :Sl], key_padding_mask[:, Sl:]
 
-        z_l = self.l2l_attn(l_query, l_key, l_value, key_padding_mask=l_key_padding_mask)
+        # TODO add l2g and g2g
+
+        z_l = self.l2l_attn(
+            l_query,
+            l_key,
+            l_value,
+            attn_mask,
+            key_padding_mask=l_key_padding_mask,
+        )
         # z_l: B x Sl x d
 
-        z_g = self.g2l_attn(g_query, l_key, l_value, key_padding_mask=l_key_padding_mask)
+        z_g = self.g2l_attn(
+            g_query,
+            l_key,
+            l_value,
+            attn_mask,
+            key_padding_mask=l_key_padding_mask,
+        )
         # z_g: B x Sg x d
 
         z = torch.cat([z_l, z_g], dim=1)

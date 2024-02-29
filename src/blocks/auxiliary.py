@@ -24,7 +24,7 @@ class FixedRatioGlobalBlock(nn.Module):
         self.add_cls_token = add_cls_token
 
 
-    def forward(self, token_ids: LongTensor, padding_mask: BoolTensor = None) -> Tuple[Tensor, BoolTensor]:
+    def forward(self, token_ids: LongTensor, padding_mask: BoolTensor = None) -> Tuple[Tensor, LongTensor, BoolTensor]:
         """_summary_
 
         Args:
@@ -34,6 +34,7 @@ class FixedRatioGlobalBlock(nn.Module):
         Returns:
             Tuple[Tensor, BoolTensor]:
                 Tensor: B x Sg x d
+                LongTensor: B x Sl
                 BoolTensor: B x Sg
         """
 
@@ -45,6 +46,17 @@ class FixedRatioGlobalBlock(nn.Module):
         num_global_tokens = seq_len // self.long_to_global_ratio
 
         global_token_ids = torch.ones((batch_size, num_global_tokens), dtype=token_ids.dtype, device=token_ids.device)
+        segment_ids = (
+            torch.arange(
+                0,
+                num_global_tokens,
+                dtype=token_ids.dtype,
+                device=token_ids.device,
+            )
+            .repeat_interleave(self.long_to_global_ratio)
+            .repeat(batch_size, 1)
+        )
+        # segment_ids: B x Sl
 
         if padding_mask is not None:
             B, Sl = padding_mask.shape
@@ -53,4 +65,4 @@ class FixedRatioGlobalBlock(nn.Module):
             ).all(dim=2)
             global_token_ids[global_padding_mask] = self.embeds.padding_idx
 
-        return self.embeds(global_token_ids), global_padding_mask
+        return self.embeds(global_token_ids), segment_ids, global_padding_mask

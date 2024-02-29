@@ -230,11 +230,12 @@ class ETC(nn.Module):
         x_long: Tensor = self.embeds(x_long_token_ids)
         # x_long: B x Sl x d
 
-        x_global, global_padding_mask = self.auxiliary_global_layer(
+        x_global, segment_ids, global_padding_mask = self.auxiliary_global_layer(
             x_long_token_ids,
             padding_mask=long_padding_mask,
         )
         # x_global: B x Sg x d
+        # segment_ids: B x Sl
         # global_padding_mask: B x Sg
 
         # concat on sequence dim
@@ -244,9 +245,10 @@ class ETC(nn.Module):
         padding_mask = torch.cat([long_padding_mask, global_padding_mask], dim=1)
         # padding_mask: B x (Sl + Sg)
 
-        z = self.encoder(x, src_key_padding_mask=padding_mask)
+        z = self.encoder(x, mask=segment_ids, src_key_padding_mask=padding_mask)
         # z: B x (Sl + Sg) x d
 
+        # TODO
         z_cls = (
             z[:, Sl:, :]
             .masked_fill(

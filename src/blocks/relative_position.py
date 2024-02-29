@@ -41,7 +41,7 @@ class SlidedRelPosIds(nn.Module):
         return ids.repeat(batch_size * self.num_heads, 1, 1)
 
 class SegmentedRelPosIds(nn.Module):
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
         super().__init__()
 
     def forward(self):
