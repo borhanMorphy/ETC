@@ -3,7 +3,7 @@ from typing import List
 from tqdm import tqdm
 from dataset import DummyDataset
 
-from src import ETC, ModelConfig, VanillaTransformer
+from src import ETC, ModelConfig, ETCAttentionConfig, VanillaTransformer
 
 import torch
 import torch.nn as nn
@@ -39,6 +39,10 @@ class Tokenizer():
 
         return token_ids
 
+    @property
+    def padding_idx(self) -> int:
+        return self._pad_token_idx
+
 if __name__ == '__main__':
     MAX_SEQ_LEN = 2**6
 
@@ -49,14 +53,40 @@ if __name__ == '__main__':
     train_dl = DataLoader(train_ds, batch_size=32)
 
     config = ModelConfig(
-        num_features=64,
-        num_heads=2,
+        num_layers=2,
+        num_classes=1,
+
         vocab_size=tokenizer.vocab_size,
+        padding_idx=tokenizer.padding_idx,
+
+        d_model=128,
+        num_heads=4,
+        dim_feedforward=128*2,
+        dropout=0.0,
 
         long_to_global_ratio=16,
         add_global_cls_token=False,
-        rel_pos_max_distance=5,
-        local_attention_radius=5*5,
+
+        l2l=ETCAttentionConfig(
+            rel_pos_max_distance=5,
+            local_attention_radius=5*5,
+            attention_type="slided",
+        ),
+        l2g=ETCAttentionConfig(
+            rel_pos_max_distance=1,
+            local_attention_radius=None,
+            attention_type="segmented",
+        ),
+        g2g=ETCAttentionConfig(
+            rel_pos_max_distance=2,
+            local_attention_radius=None,
+            attention_type="slided",
+        ),
+        g2l=ETCAttentionConfig(
+            rel_pos_max_distance=2,
+            local_attention_radius=2,
+            attention_type="segmented",
+        ),
     )
     device = "cuda"
 
@@ -72,17 +102,7 @@ if __name__ == '__main__':
     """
 
     #"""
-    model = ETC(
-        config.num_features,
-        config.num_heads,
-        tokenizer.vocab_size,
-        num_layers=2,
-
-        long_to_global_ratio=config.long_to_global_ratio,
-        add_global_cls_token=config.add_global_cls_token,
-        rel_pos_max_distance=config.rel_pos_max_distance,
-        local_attention_radius=config.local_attention_radius,
-    )
+    model = ETC(config)
     #"""
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -95,7 +115,7 @@ if __name__ == '__main__':
 
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-1)
     #"""
-    for epoch in range(100):
+    for epoch in range(200):
         total_loss = []
         for batch in tqdm(train_dl):
             optimizer.zero_grad()

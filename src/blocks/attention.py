@@ -10,6 +10,7 @@ from .relative_position import (
     SegmentedRelPosIds,
 )
 from .ffn import ProjectionLayer
+from ..config import ETCAttentionConfig
 
 
 class RelativeMultiHeadAttention(nn.Module):
@@ -190,7 +191,7 @@ class RelativeMultiHeadAttention(nn.Module):
                 batch_size,
                 self.rpe.num_heads,
                 seq_len_q,
-                self.vdim // self.rpe.num_heads,
+                self.rpe.head_dim,
             )
             .permute(0, 2, 3, 1) # -> B x Sq x (dq / h) x h
             .flatten(
@@ -210,34 +211,67 @@ class GLMultiHeadAttention(nn.Module):
         self,
         embed_dim: int,
         num_heads: int,
-        rel_pos_max_distance: int,
-        local_attention_radius: int,
         long_to_global_ratio: int,
+        l2l_config: ETCAttentionConfig,
+        l2g_config: ETCAttentionConfig,
+        g2g_config: ETCAttentionConfig,
+        g2l_config: ETCAttentionConfig,
         dropout: float = 0.0,
     ):
         super().__init__()
 
         self.long_to_global_ratio = long_to_global_ratio
 
-        #self.local_q_proj = nn.Linear(embed_dim, embed_dim//2, bias=False)
-        #self.global_q_proj = nn.Linear(embed_dim, embed_dim//2, bias=False)
+        self.long_q_proj = nn.Linear(embed_dim, embed_dim//2, bias=False)
+        self.global_q_proj = nn.Linear(embed_dim, embed_dim//2, bias=False)
 
+        # Long Attention Layers
         self.l2l_attn = RelativeMultiHeadAttention(
-            embed_dim,
+            embed_dim//2,
             num_heads,
-            rel_pos_max_distance=rel_pos_max_distance,
-            local_attention_radius=local_attention_radius,
-            attention_type="slided",
+            rel_pos_max_distance=l2l_config.rel_pos_max_distance,
+            local_attention_radius=l2l_config.local_attention_radius,
+            attention_type=l2l_config.attention_type,
             dropout=dropout,
+            kdim=embed_dim,
+            vdim=embed_dim,
+            skip_query_projection=True,
+        )
+        self.l2g_attn = RelativeMultiHeadAttention(
+            embed_dim//2,
+            num_heads,
+            rel_pos_max_distance=l2g_config.rel_pos_max_distance,
+            local_attention_radius=l2g_config.local_attention_radius,
+            attention_type=l2g_config.attention_type,
+            dropout=dropout,
+            kdim=embed_dim,
+            vdim=embed_dim,
+            skip_query_projection=True,
+        )
+        # Global Attention Layers
+        self.g2g_attn = RelativeMultiHeadAttention(
+            embed_dim//2,
+            num_heads,
+            rel_pos_max_distance=g2g_config.rel_pos_max_distance,
+            local_attention_radius=g2g_config.local_attention_radius,
+            attention_type=g2g_config.attention_type,
+            dropout=dropout,
+            kdim=embed_dim,
+            vdim=embed_dim,
+            skip_query_projection=True,
         )
         self.g2l_attn = RelativeMultiHeadAttention(
-            embed_dim,
+            embed_dim//2,
             num_heads,
-            rel_pos_max_distance=1,
-            local_attention_radius=2,
-            attention_type="segmented",
+            rel_pos_max_distance=g2l_config.rel_pos_max_distance,
+            local_attention_radius=g2l_config.local_attention_radius,
+            attention_type=g2l_config.attention_type,
             dropout=dropout,
+            kdim=embed_dim,
+            vdim=embed_dim,
+            skip_query_projection=True,
         )
+
 
     def forward(
         self,
@@ -273,27 +307,52 @@ class GLMultiHeadAttention(nn.Module):
         l_value, g_value = value[:, :Sl, :], value[:, Sl:, :]
         l_key_padding_mask, g_key_padding_mask = key_padding_mask[:, :Sl], key_padding_mask[:, Sl:]
 
-        # TODO add l2g and g2g
+        l_query = self.long_q_proj(l_query)
+        # l_query: B x Sl x d/2
 
-        z_l = self.l2l_attn(
+        g_query = self.global_q_proj(g_query)
+        # g_query: B x Sg x d/2
+
+        z_l2l = self.l2l_attn(
             l_query,
             l_key,
             l_value,
             attn_mask,
             key_padding_mask=l_key_padding_mask,
         )
-        # z_l: B x Sl x d
+        # z_l2l: B x Sl x d/2
 
-        z_g = self.g2l_attn(
+        z_l2g = self.l2g_attn(
+            l_query,
+            g_key,
+            g_value,
+            attn_mask,
+            key_padding_mask=g_key_padding_mask,
+        )
+        # z_l2g: B x Sl x d/2
+
+        z_g2g = self.g2g_attn(
+            g_query,
+            g_key,
+            g_value,
+            attn_mask,
+            key_padding_mask=g_key_padding_mask,
+        )
+        # z_g2g: B x Sg x d/2
+
+        z_g2l = self.g2l_attn(
             g_query,
             l_key,
             l_value,
             attn_mask,
             key_padding_mask=l_key_padding_mask,
         )
-        # z_g: B x Sg x d
+        # z_g2l: B x Sg x d/2
 
-        z = torch.cat([z_l, z_g], dim=1)
+        z = torch.cat([
+            torch.cat([z_l2l, z_l2g], dim=2), # B x Sl x d
+            torch.cat([z_g2g, z_g2l], dim=2), # B x Sg x d
+        ], dim=1)
         # z: B x (Sl + Sg) x d
 
         return z, None

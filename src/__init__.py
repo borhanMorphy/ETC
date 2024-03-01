@@ -1,6 +1,6 @@
 from . import blocks
 from .module import ETC, VanillaTransformer
-from .config import ModelConfig
+from .config import ModelConfig, ETCAttentionConfig
 
 
 __all__ = [
@@ -8,4 +8,5 @@ __all__ = [
     "ETC",
     "VanillaTransformer",
     "ModelConfig",
+    "ETCAttentionConfig",
 ]

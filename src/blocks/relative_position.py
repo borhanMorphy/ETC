@@ -165,7 +165,7 @@ class SegmentedRelPosIds(nn.Module):
             seq_len_k (int): Sequence length of key values as Sk
             segment_ids (LongTensor): B x max(Sq, Sk)
             key_padding_mask: (BoolTensor): B x Sk
-            device (_type_, optional): _description_. Defaults to None.
+            device (_type_, optional): device. Defaults to None.
 
         Returns:
             Tuple[Tensor, LongTensor, BoolTensor]:
@@ -173,8 +173,6 @@ class SegmentedRelPosIds(nn.Module):
                 LongTensor: (B * h) x Sq x Sk
                 BoolTensor: B x 1 x Sq x Sk
         """
-        # segment_ids: 0 0 1 1 2 -> Sk
-        # Sk -> Sq x Sk
 
         min_seq_len = min(seq_len_q, seq_len_k)
 
@@ -185,7 +183,11 @@ class SegmentedRelPosIds(nn.Module):
         # j: 1 x Smin x 1
 
         rel_pos_ids = (i - j).abs()
-        # rel_pos_ids: B x Sq x Sk
+        # rel_pos_ids: B x Smin x Smax
+
+        if seq_len_q != min_seq_len:
+            rel_pos_ids = rel_pos_ids.permute(0, 2, 1)
+            # rel_pos_ids: B x Sq x Sk
 
         mask = torch.zeros((batch_size, 1, seq_len_q, seq_len_k), dtype=torch.bool, device=device)
 
@@ -198,7 +200,7 @@ class SegmentedRelPosIds(nn.Module):
             ).view(batch_size, 1, seq_len_q, seq_len_k)
             # mask: B x 1 x Sq x Sk
 
-            # avoid masking all query values which will break softmax
+            # avoid masking all query values, otherwise it will break softmax
             mask = mask & (~mask.all(dim=3, keepdims=True))
 
         rel_pos_ids = rel_pos_ids.clip(max=self.rel_pos_max_distance).repeat(self.num_heads, 1, 1)
