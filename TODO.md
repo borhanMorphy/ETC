@@ -13,7 +13,7 @@
 - [x] Sliding Window Attention
 - [x] Full Attention
 - [x] Masked Full Attention
-- [ ] Fast Sliding Window Attention
+- [x] Fast Sliding Window Attention
 
 ### Projection Layers
 
@@ -28,4 +28,7 @@
 
 ### Extra
 
-- [ ] Compare with vanilla transformer <-> ETC params & performance
+- [ ] Compare with vanilla transformer
+  - [x] Memory Comparison
+  - [ ] Speed Comparison
+  - [ ] Size Comparison

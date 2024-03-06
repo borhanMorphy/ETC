@@ -1,4 +1,5 @@
 from typing import Optional, Tuple, Literal
+import math
 
 import torch
 import torch.nn as nn
@@ -8,6 +9,7 @@ from torch import Tensor, LongTensor, BoolTensor
 from .relative_position import (
     SlidedRelPosIds,
     SegmentedRelPosIds,
+    FastRelPosIds,
 )
 from .ffn import ProjectionLayer
 from ..config import ETCAttentionConfig
@@ -128,6 +130,25 @@ class RelativeMultiHeadAttention(nn.Module):
 
         return energy
 
+    def apply_attention(self, attn: Tensor, V: Tensor) -> Tensor:
+        batch_size = attn.shape[0] // self.rpe.num_heads
+        seq_len_q = attn.shape[1]
+        out = (
+            torch.matmul(attn, V) # (B * h) x Sq x (dq / h)
+            .view(
+                batch_size,
+                self.rpe.num_heads,
+                seq_len_q,
+                self.rpe.head_dim,
+            )
+            .permute(0, 2, 3, 1) # -> B x Sq x (dq / h) x h
+            .flatten(
+                start_dim=2,
+                end_dim=3,
+            ) # -> B x Sq x dq
+        )
+        return out
+
     def forward(
         self,
         Q: Tensor,
@@ -185,22 +206,241 @@ class RelativeMultiHeadAttention(nn.Module):
 
         attn = self.dropout(attn)
 
-        out = (
-            torch.matmul(attn, V) # (B * h) x Sq x (dq / h)
+        out = self.apply_attention(attn, V)
+        # out: B x Sq x dq
+
+        return self.output(out) # -> B x Sq x dq
+
+
+
+class FastRelativeMHA(RelativeMultiHeadAttention):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        rel_pos_max_distance: int,
+        local_attention_radius: Optional[int] = None,
+        attention_type: Literal["slided", "segmented"] = "slided",
+        dropout: float = 0.0,
+        kdim: Optional[int] = None,
+        vdim: Optional[int] = None,
+        skip_query_projection: bool = False,
+    ):
+        super().__init__(
+            embed_dim,
+            num_heads,
+            rel_pos_max_distance,
+            local_attention_radius=local_attention_radius,
+            attention_type=attention_type,
+            dropout=dropout,
+            kdim=kdim,
+            vdim=vdim,
+            skip_query_projection=skip_query_projection,
+        )
+        self.local_attention_radius = local_attention_radius
+
+        self.rpe = FastRelPosIds(
+            num_heads,
+            rel_pos_max_distance,
+            embed_dim,
+            local_attention_radius=local_attention_radius,
+        )
+
+    def compute_energy(
+        self,
+        Q: Tensor,
+        K: Tensor,
+        rel_embeds: Tensor,
+        rel_pos_ids: LongTensor,
+        mask: BoolTensor = None,
+    ) -> Tensor:
+        """_summary_
+
+        Args:
+            Q (Tensor): (B * h) x S x (d / h)
+            K (Tensor): (B * h) x S x (d / h)
+            V (Tensor): (B * h) x S x (d / h)
+            rel_embeds (Tensor): (B * h) x R x (d / h)
+            rel_pos_ids (LongTensor): (B * h) x nbq x bl x (3 * bl)
+            mask (BoolTensor): B x nbq x bl x (3 * bl)
+
+        Returns:
+            Tensor: (B * h * nb) x bl x (3 * bl)
+        """
+        assert Q.shape[1] == K.shape[1], "needs to be same sequence length"
+
+        batch_and_head_size, seq_len, head_dim = Q.shape
+
+        block_length = self.local_attention_radius + 1
+        num_blocks_for_queries = math.ceil(seq_len / block_length)
+        initial_padding_size = num_blocks_for_queries * block_length - seq_len
+
+        # getting all possible Q relative values
+        Q_rel = Q @ rel_embeds.permute(0, 2, 1)
+        # Q_rel: (B * h) x S x R
+        Q_rel = (
+            F.pad(Q_rel, (0, 0, 0, initial_padding_size), mode="constant", value=0)
             .view(
-                batch_size,
-                self.rpe.num_heads,
-                seq_len_q,
-                self.rpe.head_dim,
+                batch_and_head_size,
+                num_blocks_for_queries,
+                block_length,
+                self.rpe.num_pos_ids,
             )
-            .permute(0, 2, 3, 1) # -> B x Sq x (dq / h) x h
+        )
+        # Q_rel: (B * h) x nbq x bl x R
+
+        # add zero padding to the end of sequence
+        Q = (
+            F.pad(Q, (0, 0, 0, initial_padding_size), mode="constant", value=0)
+            .view(
+                batch_and_head_size,
+                num_blocks_for_queries,
+                block_length,
+                head_dim,
+            )
+        ) # Q: (B * h) x nbq x bl x (d / h)
+
+
+        sliding_ids = (
+            torch.arange(0, 3*block_length, device=Q.device)
+            .view(1, 3*block_length)
+            .repeat(num_blocks_for_queries, 1)
+        ) # sliding_ids: nbq x (3 * bl)
+
+        sliding_ids += (
+            torch.arange(0, num_blocks_for_queries*block_length, block_length, device=Q.device)
+            .view(num_blocks_for_queries, 1)
+        )
+        key_padding_left = block_length
+        key_padding_right = block_length
+
+        # add zero padding to the end of sequence
+        K = F.pad(K, (0, 0, key_padding_left, key_padding_right + initial_padding_size), mode="constant", value=0)
+        # K: (B * h) x (pad_left + S + pad_right)  x (d / h)
+        K = K[:, sliding_ids, :]
+        # K: (B * h) x nbq x (3 * bl) x (d / h)
+
+        rel_shift = (
+            Q_rel.gather(
+                3,
+                # TODO if seq len won't change, compute this only once
+                rel_pos_ids,
+            )
+            .flatten(
+                start_dim=0,
+                end_dim=1,
+            )
+        )
+        # rel_shift: (B * h) x nbq x bl x (3 * bl)
+
+        energy = torch.matmul(
+            Q.view(
+                batch_and_head_size * num_blocks_for_queries,
+                block_length,
+                head_dim,
+            ),
+            K.view(
+                batch_and_head_size * num_blocks_for_queries,
+                3*block_length,
+                head_dim,
+            ).permute(0, 2, 1)
+        ) # (B * h * nbq) x bl x (3 * bl)
+
+        energy = (energy + rel_shift) / self.normalizer
+        # energy: (B * h * nbq) x bl x (3 * bl)
+        # mask: B x nbq x bl x (3 * bl)
+
+        energy = (
+            energy
+            .view(
+                batch_and_head_size // self.rpe.num_heads,
+                self.rpe.num_heads,
+                num_blocks_for_queries,
+                block_length,
+                3 * block_length
+            )
+            .masked_fill(
+                mask.view(
+                    batch_and_head_size // self.rpe.num_heads,
+                    1,
+                    num_blocks_for_queries,
+                    block_length,
+                    3 * block_length,
+                ),
+                float("-inf"),
+            )
+            .flatten(
+                start_dim=0,
+                end_dim=2,
+            )
+        )
+        # energy: (B * h * nb) x bl x (3 * bl)
+
+        return energy
+
+
+    def apply_attention(self, attn: Tensor, V: Tensor) -> Tensor:
+        """_summary_
+
+        Args:
+            attn (Tensor): (B * h * nb) x bl x (3 * bl)
+            V (Tensor): (B * h) x S x (d / h)
+
+        Returns:
+            Tensor: B x S x d
+        """
+
+        batch_and_head_size, seq_len, head_dim = V.shape
+
+        block_length = self.local_attention_radius + 1
+        num_blocks_for_queries = math.ceil(seq_len / block_length)
+        initial_padding_size = num_blocks_for_queries * block_length - seq_len
+
+        sliding_ids = (
+            torch.arange(0, 3*block_length, device=V.device)
+            .view(1, 3*block_length)
+            .repeat(num_blocks_for_queries, 1)
+        ) # sliding_ids: nbq x (3 * bl)
+
+        sliding_ids += (
+            torch.arange(0, num_blocks_for_queries*block_length, block_length, device=V.device)
+            .view(num_blocks_for_queries, 1)
+        )
+        key_padding_left = block_length
+        key_padding_right = block_length
+
+        # add zero padding to the end of sequence
+        V = F.pad(V, (0, 0, key_padding_left, key_padding_right + initial_padding_size), mode="constant", value=0)
+        # V: (B * h) x (pad_left + S + pad_right)  x (d / h)
+        V = V[:, sliding_ids, :].view(
+            batch_and_head_size * num_blocks_for_queries,
+            3*block_length,
+            head_dim,
+        )
+        # V: (B * h * nbq) x bl x (d / h)
+        return (
+            torch.matmul(attn, V)
+            .view(
+                batch_and_head_size // self.rpe.num_heads,
+                self.rpe.num_heads,
+                num_blocks_for_queries,
+                block_length,
+                head_dim,
+            ) # B x h x nbq x bl x (d / h)
             .flatten(
                 start_dim=2,
                 end_dim=3,
-            ) # -> B x Sq x dq
-        )
+            )[:, :, :seq_len, :] # B x h x S x (d / h)
+            .permute(
+                0, 2, 3, 1
+            ) # B x S x (d / h) x h
+            .flatten(
+                start_dim=2,
+                end_dim=3,
+            )
+        ) # B x S x d
+        
 
-        return self.output(out) # -> B x Sq x dq
 
 
 class GLMultiHeadAttention(nn.Module):
@@ -226,7 +466,7 @@ class GLMultiHeadAttention(nn.Module):
         self.global_q_proj = nn.Linear(embed_dim, embed_dim//2, bias=False)
 
         # Long Attention Layers
-        self.l2l_attn = RelativeMultiHeadAttention(
+        self.l2l_attn = FastRelativeMHA(
             embed_dim//2,
             num_heads,
             rel_pos_max_distance=l2l_config.rel_pos_max_distance,
@@ -356,3 +596,4 @@ class GLMultiHeadAttention(nn.Module):
         # z: B x (Sl + Sg) x d
 
         return z, None
+
