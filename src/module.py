@@ -73,7 +73,7 @@ class ETC(nn.Module):
             padding_mask=long_padding_mask,
         )
         # x_global: B x Sg x d
-        # segment_ids: B x Sl
+        # segment_ids: B x Sl x Sg x 2
         # global_padding_mask: B x Sg
 
         # concat on sequence dim

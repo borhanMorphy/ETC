@@ -61,7 +61,7 @@ class FastRelPosIds(nn.Module):
         segment_ids: LongTensor = None,
         key_padding_mask: BoolTensor = None,
         device=None,
-    ) -> Tuple[Tensor, LongTensor, BoolTensor]:
+    ) -> Tuple[LongTensor, Tensor, BoolTensor]:
         """_summary_
 
         Args:
@@ -73,9 +73,9 @@ class FastRelPosIds(nn.Module):
             device (_type_, optional): _description_. Defaults to None.
 
         Returns:
-            Tuple[Tensor, LongTensor, BoolTensor]:
-                Tensor: (B * h) x R x (dq / h)
+            Tuple[LongTensor, Tensor, BoolTensor]:
                 LongTensor: (B * h) x nbq x bl x (3 * bl)
+                Tensor: (B * h) x R x (dq / h)
                 BoolTensor: B x nbq x bl x (3 * bl)
         """
         assert seq_len_q == seq_len_k
@@ -218,7 +218,7 @@ class SlidedRelPosIds(nn.Module):
         segment_ids: LongTensor = None,
         key_padding_mask: BoolTensor = None,
         device=None,
-    ) -> Tuple[Tensor, LongTensor, BoolTensor]:
+    ) -> Tuple[LongTensor, Tensor, BoolTensor]:
         """_summary_
 
         Args:
@@ -231,8 +231,8 @@ class SlidedRelPosIds(nn.Module):
 
         Returns:
             Tuple[Tensor, LongTensor, BoolTensor]:
-                Tensor: (B * h) x R x (dq / h)
                 LongTensor: (B * h) x Sq x Sk
+                Tensor: (B * h) x R x (dq / h)
                 BoolTensor: B x 1 x Sq x Sk
         """
         i = torch.arange(seq_len_k, device=device).repeat(seq_len_q, 1)
@@ -316,7 +316,7 @@ class SegmentedRelPosIds(nn.Module):
         segment_ids: LongTensor = None,
         key_padding_mask: BoolTensor = None,
         device=None,
-    ) -> Tuple[Tensor, LongTensor, BoolTensor]:
+    ) -> Tuple[LongTensor, Tensor, BoolTensor]:
         """_summary_
 
         Args:
@@ -329,8 +329,8 @@ class SegmentedRelPosIds(nn.Module):
 
         Returns:
             Tuple[Tensor, LongTensor, BoolTensor]:
-                Tensor: (B * h) x R x (dq / h)
                 LongTensor: (B * h) x Sq x Sk
+                Tensor: (B * h) x R x (dq / h)
                 BoolTensor: B x 1 x Sq x Sk
         """
 
