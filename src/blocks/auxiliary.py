@@ -1,41 +1,22 @@
-from typing import Tuple
-
 import torch
 import torch.nn as nn
-from torch import Tensor, LongTensor, BoolTensor
+from torch import LongTensor
 
 
 class FixedRatioGlobalBlock(nn.Module):
-    def __init__(
-        self,
-        hidden_size: int,
-        long_to_global_ratio: int = 16,
-        add_cls_token: bool = False,
-    ):
+    def __init__(self, long_to_global_ratio: int = 16):
         super().__init__()
-
         self.long_to_global_ratio = long_to_global_ratio
-        extra_num_tokens = 2 if add_cls_token else 1
-        self.embeds = nn.Embedding(
-            1 + extra_num_tokens,
-            hidden_size,
-            padding_idx=0,
-        )
-        self.add_cls_token = add_cls_token
 
 
-    def forward(self, token_ids: LongTensor, padding_mask: BoolTensor = None) -> Tuple[Tensor, LongTensor, BoolTensor]:
-        """_summary_
+    def forward(self, token_ids: LongTensor) -> LongTensor:
+        """Generates global token ids
 
         Args:
             token_ids (LongTensor): B x Sl
-            padding_mask (BoolTensor, optional): B x Sl. Defaults to None.
 
         Returns:
-            Tuple[Tensor, BoolTensor]:
-                Tensor: B x Sg x d
-                LongTensor: B x Sl
-                BoolTensor: B x Sg
+            LongTensor: B x Sl
         """
 
         batch_size, seq_len = token_ids.shape
@@ -57,12 +38,4 @@ class FixedRatioGlobalBlock(nn.Module):
             .repeat(batch_size, 1)
         )
         # segment_ids: B x Sl
-
-        if padding_mask is not None:
-            B, Sl = padding_mask.shape
-            global_padding_mask = padding_mask.reshape(
-                B, Sl // self.long_to_global_ratio, self.long_to_global_ratio,
-            ).all(dim=2)
-            global_token_ids[global_padding_mask] = self.embeds.padding_idx
-
-        return self.embeds(global_token_ids), segment_ids, global_padding_mask
+        return segment_ids

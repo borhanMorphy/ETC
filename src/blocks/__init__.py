@@ -5,15 +5,13 @@ from .attention import (
 from .ffn import ProjectionLayer
 from .auxiliary import FixedRatioGlobalBlock
 from .relative_position import (
-    SlidedRelPosIds,
-    SegmentedRelPosIds,
+    RelativePositionLayer,
 )
 
 __all__ = [
     "GLMultiHeadAttention",
     "RelativeMultiHeadAttention",
-    "SlidedRelPosIds",
-    "SegmentedRelPosIds",
+    "RelativePositionLayer",
     "ProjectionLayer",
     "FixedRatioGlobalBlock",
 ]

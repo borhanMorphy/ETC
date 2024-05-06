@@ -1,12 +1,16 @@
-## Modules
+### Modules
 
-- [ ] CPC
 - [x] Relative Position Encoding
 - [x] Global-Local Attention
   - [x] G2G
   - [x] G2L
   - [x] L2G
   - [x] L2L
+
+## Pre Training Objectives
+
+- [ ] MLM
+- [ ] CPC
 
 ### Attention Types
 
@@ -18,7 +22,7 @@
 ### Projection Layers
 
 - [x] Separate
-- [ ] Shared
+- [-] Shared
 
 ### Global Input
 
@@ -30,5 +34,5 @@
 
 - [ ] Compare with vanilla transformer
   - [x] Memory Comparison
-  - [ ] Speed Comparison
-  - [ ] Size Comparison
+  - [ ] Speed Comparison <-
+  - [ ] Size Comparison <-

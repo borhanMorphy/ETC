@@ -1,63 +1,59 @@
+from src import ETC, config
+
 import torch
-from src.blocks.attention import FastRelativeMHA, RelativeMultiHeadAttention
 
+BATCH_SIZE = 2
+PAD_SIZE = 1
+SEQ_SIZE = 63
 
-SEQ_LEN = 16
-batch_size = 2
-
-embed_dim = 16
-num_heads = 2
-
-rel_pos_max_distance = 2
-local_attention_radius = 2
-
-fast_model = FastRelativeMHA(
-    embed_dim,
-    num_heads,
-    rel_pos_max_distance,
-    local_attention_radius=local_attention_radius,
-    kdim=embed_dim//2,
-    vdim=embed_dim//2,
-    skip_query_projection=True,
+model_config = config.ModelConfig(
+    d_model=128,
+    num_heads=4,
+    dim_feedforward=2 * 128,
+    dropout=0.0,
+    num_layers=1,
+    num_classes=-1,  # TODO
+    vocab_size=50,
+    padding_idx=0,
+    long_to_global_ratio=16,
+    l2l=config.ETCAttentionConfig(
+        rel_pos_max_distance=16,
+        local_attention_radius=5,
+        attention_type="sparse",
+        directed_relative_position=True,
+    ),
+    l2g=config.ETCAttentionConfig(
+        rel_pos_max_distance=8,
+        local_attention_radius=None,
+        attention_type="dense",
+        directed_relative_position=False,
+    ),
+    g2g=config.ETCAttentionConfig(
+        rel_pos_max_distance=3,
+        local_attention_radius=None,
+        attention_type="dense",
+        directed_relative_position=True,
+    ),
+    g2l=config.ETCAttentionConfig(
+        rel_pos_max_distance=8,
+        local_attention_radius=None,
+        attention_type="dense",
+        directed_relative_position=False,
+    ),
 )
 
-model = RelativeMultiHeadAttention(
-    embed_dim,
-    num_heads,
-    rel_pos_max_distance,
-    local_attention_radius=local_attention_radius,
-    kdim=embed_dim//2,
-    vdim=embed_dim//2,
-    skip_query_projection=True,
-)
+token_ids = torch.randint(1, 50, (BATCH_SIZE, SEQ_SIZE + PAD_SIZE))
 
-# B x S x d
-Q = torch.rand(batch_size, SEQ_LEN, embed_dim)
-K = torch.rand(batch_size, SEQ_LEN, embed_dim//2)
-V = torch.rand(batch_size, SEQ_LEN, embed_dim//2)
-segment_ids = torch.randint(0, 2, size=(batch_size, SEQ_LEN))
-key_padding_mask = torch.zeros((batch_size, SEQ_LEN), dtype=torch.bool)
-#key_padding_mask[:, 10:] = True
+if PAD_SIZE > 0:
+    token_ids[:, -PAD_SIZE:] = model_config.padding_idx
 
-model.load_state_dict(fast_model.state_dict())
 
-model.eval()
-fast_model.eval()
+model = ETC(model_config)
 
-fast_out = fast_model.forward(
-    Q,
-    K,
-    V,
-    segment_ids,
-    key_padding_mask=key_padding_mask,
-)
 
-out = model.forward(
-    Q,
-    K,
-    V,
-    segment_ids,
-    key_padding_mask=key_padding_mask,
-)
-# B x S x d
-print(torch.isclose(fast_out, out))
+print(model)
+
+long_outs, global_outs = model(token_ids)
+
+print("long_outs -> ", long_outs.shape)
+print("global_outs -> ", global_outs.shape)
