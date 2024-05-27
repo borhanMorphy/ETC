@@ -1,5 +1,50 @@
 from typing import Optional, Literal
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass
+class MLMConfig:
+    mask_perc: float = 0.15
+    replace_with_mask_token_perc = 0.80
+    replace_with_random_token_perc: float = 0.10
+    keep_same_token_perc: float = 0.10
+
+    # sanity checks
+    def __post_init__(self):
+        assert (
+            0.0 <= self.mask_perc <= 1.0
+        ), "mask percantage can not be larger than 1 and lower than 0"
+        # TODO add more
+
+
+@dataclass
+class CPCConfig:
+    sentence_mask_perc: float = 0.10
+
+    # sanity checks
+    def __post_init__(self):
+        assert (
+            0.0 <= self.sentence_mask_perc <= 1.0
+        ), "sentence mask percantage can not be larger than 1 and lower than 0"
+
+
+@dataclass
+class PreTrainingConfig:
+    mlm_loss_weight: float = 0.8
+    cpc_loss_weight: float = 0.2
+
+    mlm_config: MLMConfig = field(default_factory=MLMConfig)
+    cpc_config: CPCConfig = field(default_factory=CPCConfig)
+
+    @property
+    def is_cpc_enabled(self) -> bool:
+        return self.cpc_loss_weight != 0.0
+
+    # sanity checks
+    def __post_init__(self):
+        assert (
+            self.mlm_loss_weight + self.cpc_loss_weight
+        ) == 1.0, "sum of MLM and CPC must be eqaul to 1"
 
 
 @dataclass
@@ -39,7 +84,6 @@ class TransformerLayerConfig:
 @dataclass
 class ModelConfig(TransformerLayerConfig):
     num_layers: int
-    num_classes: int
 
     # including global token types + padding
     vocab_size: int

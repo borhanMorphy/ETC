@@ -1,12 +1,12 @@
 from . import blocks
-from .module import ETC, VanillaTransformer
-from .config import ModelConfig, ETCAttentionConfig
+from .module import ETC
+from .config import ModelConfig, ETCAttentionConfig, PreTrainingConfig
 
 
 __all__ = [
     "blocks",
     "ETC",
-    "VanillaTransformer",
     "ModelConfig",
     "ETCAttentionConfig",
+    "PreTrainingConfig",
 ]

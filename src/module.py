@@ -119,25 +119,24 @@ class ETC(nn.Module):
             encoder_layer, num_layers=config.num_layers
         )
 
-    def forward(self, long_token_ids: LongTensor) -> Tuple[Tensor, Tensor]:
+    def forward(
+        self,
+        long_token_ids: LongTensor,
+        global_token_ids: LongTensor,
+        segment_ids: LongTensor,
+    ) -> Tuple[Tensor, Tensor]:
         """_summary_
 
         Args:
             long_token_ids (Tensor): B x Sl
+            global_token_ids (Tensor): B x Sg
+            segment_ids (Tensor): B x Sl
 
         Returns:
             Tuple[Tensor, Tensor]:
                 Tensor: B x Sl x d
                 Tensor: B x Sg x d
         """
-        global_token_ids, segment_ids = utils.generate_auxiliary_tokens(
-            long_token_ids,
-            padding_idx=self.embeds.padding_idx,
-            long_to_global_ratio=self.config.long_to_global_ratio,
-        )
-        # global_token_ids: B x Sg
-        # segment_ids: B x Sl
-
         (
             l2l_rel_pos_ids,
             l2g_rel_pos_ids,
@@ -197,59 +196,3 @@ class ETC(nn.Module):
         z_global = z[:, Sl:, :]
 
         return z_long, z_global
-
-
-class VanillaTransformer(nn.Module):
-    def __init__(
-        self,
-        d_model: int,
-        num_heads: int,
-        vocab_size: int,
-        max_seq_len: int,
-        num_layers: int = 1,
-        num_classes: int = 1,
-        **kwargs,
-    ):
-        super().__init__()
-
-        self.embeds = nn.Embedding(vocab_size, d_model, padding_idx=0)
-
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model,
-            num_heads,
-            dim_feedforward=d_model * 2,
-            dropout=0,
-            batch_first=True,
-        )
-
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        # self.cls_head = nn.Sequential(
-        #    nn.Linear(d_model, d_model // 2, bias=False),
-        #    nn.ReLU(),
-        #    nn.Linear(d_model // 2, num_classes, bias=False),
-        # )
-        self.pos_embeds = nn.Embedding(max_seq_len, d_model)
-
-    def forward(self, x_long_token_ids: LongTensor) -> Tensor:
-        """_summary_
-
-        Args:
-            x_long_token_ids (Tensor): B x Sl
-
-        Returns:
-            Tensor: B x Nc
-        """
-        mask = x_long_token_ids == 0
-
-        x: Tensor = self.embeds(x_long_token_ids)
-        # x: B x Sl x d
-
-        pos_ids = torch.arange(x.shape[1], device=x.device)
-
-        z = self.encoder(x + self.pos_embeds(pos_ids), src_key_padding_mask=mask)
-        # z: B x (Sl + Sg) x d
-
-        # logits = self.cls_head(z[:, 0, :])
-        # logits: B x Nc
-
-        return z

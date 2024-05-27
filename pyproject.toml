@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"etc" = "src"}
+
+[project]
+name = "etc"
+authors = [
+    {name = "Ömer BORHAN", email = "borhano.f.42@gmail.com"},
+]
+description = "Implementation of Encoding Long and Structured Inputs in Transformers"
+readme = "README.md"
+requires-python = ">=3.8"
+keywords = ["transformer", "foundation model"]
+license = {text = "MIT"}
+classifiers = [
+    "Environment :: Console",
+    "Natural Language :: English",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+]
+dependencies = [
+    "torch"
+]
+dynamic = ["version"]
