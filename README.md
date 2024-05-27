@@ -21,7 +21,7 @@ pip install .
 ## References
 
 - [Official Implementation](https://github.com/google-research/google-research/tree/master/etcmodel)
-- [Paper](https://arxiv.org/pdf/1703.05175.pdf)
+- [Paper](https://arxiv.org/pdf/2004.08483)
 
 ## Citations
 
