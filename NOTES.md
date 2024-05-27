@@ -1,4 +1,0 @@
-- Pre-training phase uses 1 global token id
-  - Fine-tuning phase can have different tokens
-- Query is projected per global/local layer
-- Key and Value is projected for each l2l, l2g, g2g, g2l if not shared
