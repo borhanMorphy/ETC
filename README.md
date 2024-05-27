@@ -1,4 +1,4 @@
-# Encoding Long and Structured Inputs in Transformers
+# Extended Transformer Construction (ETC)
 
 <!-- TODO add badges -->
 
